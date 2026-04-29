@@ -8,9 +8,11 @@ const W = 640;
 const H = 300;
 const ROUNDS = 3;
 const G = 1400;          // 중력 가속도 (px/s²)
-const FRICTION = 1.6;    // 지수 감쇠 계수 (per second)
+const FRICTION = 1.0;    // 지수 감쇠 계수 (per second). 너무 크면 얕은 골짜기 탈출 불가
 const MAX_TILT = 0.45;   // 최대 기울임 (rad ≈ 26°)
 const TILT_PER_PX = 0.003;
+const TILT_RETURN = 4.0; // 손 뗀 후 수평 복귀 속도 (per second)
+const BASE_LINE = 90;    // 평지일 때의 지면 윗선 (캔버스 y)
 
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
@@ -75,15 +77,17 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     for (let i = 0; i < numValleys; i++) {
       const cx = W * (0.18 + 0.64 * (i + 0.5) / numValleys + (Math.random() - 0.5) * 0.04);
       const sigma = 55 + Math.random() * 18;
-      const depth = 60 + Math.random() * 25;
+      const depth = 45 + Math.random() * 18; // 얕음(탈출 가능) ~ 중간
       valleys.push({ cx, sigma, depth });
     }
     let deepestIdx = 0;
     for (let i = 1; i < valleys.length; i++) {
       if (valleys[i].depth > valleys[deepestIdx].depth) deepestIdx = i;
     }
-    valleys[deepestIdx].depth += 35; // 확실히 더 깊게
+    valleys[deepestIdx].depth += 35; // 확실히 더 깊게 (하지만 max tilt 로 탈출 가능 범위)
 
+    // 캔버스 y는 아래로 증가 → 진짜 골짜기는 curve 값이 *커야* 한다.
+    // 평지(BASE_LINE)에 가우시안 dip 을 더해 아래로 움푹 파인 모양을 만든다.
     const curve = new Array(W);
     for (let x = 0; x < W; x++) {
       let dip = 0;
@@ -91,7 +95,7 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
         const d = (x - v.cx) / v.sigma;
         dip += v.depth * Math.exp(-0.5 * d * d);
       }
-      curve[x] = Math.max(40, H - 60 - dip);
+      curve[x] = Math.min(H - 12, BASE_LINE + dip);
     }
     return { curve, valleys, deepestIdx };
   }
@@ -129,6 +133,12 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     lastT = now;
 
     if (!won) {
+      // 손 뗀 동안에는 worldTilt 가 0 으로 자동 복귀 (미로 장난감처럼)
+      if (!dragStart && worldTilt !== 0) {
+        worldTilt *= Math.exp(-TILT_RETURN * dt);
+        if (Math.abs(worldTilt) < 0.003) worldTilt = 0;
+      }
+
       // 표면 위 공: 접선 방향 가속 = G * (sin(θ) + cos(θ) * slope_canvas)
       // 도출: 화면이 worldTilt 만큼 회전 → 캔버스 좌표계에서 중력 = (G sin θ, G cos θ)
       // 표면 접선 (+x 방향) 단위벡터 ≈ (1, slope) / sqrt(1+slope²) → 작은 경사 가정으로 단순화
@@ -142,18 +152,17 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
       if (ballX < 10) { ballX = 10; ballV = -ballV * 0.3; }
       if (ballX > W - 10) { ballX = W - 10; ballV = -ballV * 0.3; }
 
-      // 정착 감지
+      // 정착 감지: 큰 별 근처 + 거의 정지 (기울기 조건은 자동 복귀가 처리)
       const target = valleys[deepestIdx].cx;
-      if (Math.abs(ballX - target) < 22 && Math.abs(ballV) < 10 && Math.abs(worldTilt) < 0.08) {
+      if (Math.abs(ballX - target) < 30 && Math.abs(ballV) < 25) {
         settledTime += dt;
-        if (settledTime > 0.45) {
+        if (settledTime > 0.4) {
           won = true;
           totalElapsed += (performance.now() - roundStart) / 1000;
           msgEl.textContent = "딱! 도착! 🎉";
           msgEl.className = "msg good";
           playFanfare();
           burstConfetti(50);
-          // 부드럽게 수평 복귀
           worldTilt = 0;
           setTimeout(startRound, 1300);
         }
@@ -279,8 +288,8 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     cv.style.display = "none";
     msgEl.textContent = "🎉 끝!";
     let stars;
-    if (totalElapsed < 25) stars = 3;
-    else if (totalElapsed < 60) stars = 2;
+    if (totalElapsed < 60) stars = 3;
+    else if (totalElapsed < 150) stars = 2;
     else stars = 1;
     msg2El.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득! (총 ${totalElapsed.toFixed(1)}초)`;
     msg2El.className = "msg good";
