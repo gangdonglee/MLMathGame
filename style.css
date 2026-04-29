@@ -344,6 +344,12 @@ canvas { display: block; touch-action: none; }
 .jar .draws span.blue { background: var(--blue); }
 .jar .name { margin-top: 8px; }
 
+/* Simon pads (pattern v3) */
+.simon-pad {
+  outline: none;
+}
+.simon-pad:active { transform: scale(0.95) !important; }
+
 /* Sort bins (shapes v2) */
 .sort-bin {
   background: var(--card);

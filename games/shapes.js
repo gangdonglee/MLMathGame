@@ -1,16 +1,16 @@
-// 게임 2 (v2): 도형 친구 — 섞여있는 도형들을 같은 모양 상자로 끌어다 넣기
-// (분류 = 본질적 속성[모양]만 보고 우연적 속성[색]은 무시)
+// 게임 2 (v3): 도형 친구 — 두더지잡기. 정답 모양만 빠르게 콕!
+// (분류 = 본질[모양]만 보고 우연[색·크기] 무시. 시간 압박으로 액션화)
 import { setStarsIfBetter } from "../shared/score.js";
-import { playGood, playBad, playFanfare, playClick } from "../shared/audio.js";
+import { playGood, playBad, playFanfare, playPop } from "../shared/audio.js";
 import { burstConfetti } from "../shared/celebrate.js";
 
 const SHAPE_KINDS = ["circle", "square", "triangle", "star"];
 const COLORS = ["#ff8a4c", "#6cb6ff", "#ff9ec7", "#88e0a0", "#b58cff", "#ffd166"];
-const ROUNDS = 4;
+const ROUNDS = 3;
+const HITS_NEEDED = 6;
 
-function shapeSvg(kind, color, size = 56) {
-  const c = color;
-  const s = size;
+function shapeSvg(kind, color, size = 60) {
+  const c = color, s = size;
   switch (kind) {
     case "circle":   return `<svg viewBox="0 0 100 100" width="${s}" height="${s}"><circle cx="50" cy="50" r="42" fill="${c}"/></svg>`;
     case "square":   return `<svg viewBox="0 0 100 100" width="${s}" height="${s}"><rect x="12" y="12" width="76" height="76" rx="10" fill="${c}"/></svg>`;
@@ -22,143 +22,126 @@ function shapeSvg(kind, color, size = 56) {
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
   let mistakes = 0;
+  let alive = true;
+  let target = null;
+  let hits = 0;
+  let spawnTimer = null;
+  let activeShapes = [];
 
   const wrap = document.createElement("div");
   wrap.style.cssText = "width:100%;display:flex;flex-direction:column;align-items:center;gap:12px";
   wrap.innerHTML = `
-    <div class="msg" id="msg">같은 모양 상자에 끌어다 놓아!</div>
-    <div id="playground" style="position:relative;width:100%;max-width:440px;height:240px;background:#fff7e6;border-radius:18px;box-shadow:var(--shadow);overflow:hidden;touch-action:none"></div>
-    <div id="bins" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;width:100%;max-width:440px"></div>
+    <div class="msg" id="msg">이 모양만 콕!</div>
+    <div id="target-display" style="display:flex;align-items:center;gap:10px;font-size:18px;color:var(--ink-soft)">
+      <span>이거:</span><div id="target-shape"></div><span id="hits-counter">0 / ${HITS_NEEDED}</span>
+    </div>
+    <div id="play-area" style="position:relative;width:100%;max-width:420px;height:400px;background:#fff7e6;border-radius:18px;box-shadow:var(--shadow);overflow:hidden;touch-action:manipulation"></div>
     <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
 
-  const playgroundEl = wrap.querySelector("#playground");
-  const binsEl = wrap.querySelector("#bins");
+  const playArea = wrap.querySelector("#play-area");
+  const targetShape = wrap.querySelector("#target-shape");
+  const hitsCounter = wrap.querySelector("#hits-counter");
   const msgEl = wrap.querySelector("#msg");
   const msg2El = wrap.querySelector("#msg2");
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
     round += 1;
-    msgEl.textContent = `${round} / ${ROUNDS} — 같은 모양 상자에 끌어다 놓아!`;
+    target = SHAPE_KINDS[Math.floor(Math.random() * SHAPE_KINDS.length)];
+    targetShape.innerHTML = shapeSvg(target, "#3a2f1e", 40);
+    msgEl.textContent = `${round} / ${ROUNDS} — 이 모양만 ${HITS_NEEDED}개!`;
     msgEl.className = "msg";
     msg2El.textContent = "";
     msg2El.className = "msg";
-
-    const kindCount = 2 + Math.min(round - 1, 2); // 2~4
-    const kinds = shuffle([...SHAPE_KINDS]).slice(0, kindCount);
-
-    binsEl.innerHTML = "";
-    for (const kind of kinds) {
-      const bin = document.createElement("div");
-      bin.className = "sort-bin";
-      bin.dataset.kind = kind;
-      bin.innerHTML = `
-        <div class="bin-icon">${shapeSvg(kind, "rgba(58,47,30,0.35)", 38)}</div>
-        <div class="bin-label">상자</div>
-      `;
-      binsEl.appendChild(bin);
-    }
-
-    playgroundEl.innerHTML = "";
-    let pieces = [];
-    for (const kind of kinds) {
-      const count = 1 + Math.floor(Math.random() * 2); // 1~2 each
-      for (let i = 0; i < count; i++) {
-        pieces.push({ kind, color: COLORS[Math.floor(Math.random() * COLORS.length)] });
-      }
-    }
-    shuffle(pieces);
-
-    let remaining = pieces.length;
-    pieces.forEach((p, i) => {
-      const el = document.createElement("div");
-      el.className = "drag-shape";
-      const left = 20 + (i % 5) * 78 + Math.random() * 8;
-      const top = 20 + Math.floor(i / 5) * 90 + Math.random() * 8;
-      el.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:60px;height:60px;cursor:grab;touch-action:none;user-select:none`;
-      el.innerHTML = shapeSvg(p.kind, p.color, 60);
-      makeDraggable(el, p, () => {
-        remaining--;
-        if (remaining === 0) {
-          msg2El.textContent = "다 분류했다! 👏";
-          msg2El.className = "msg good";
-          playFanfare();
-          setTimeout(startRound, 900);
-        }
-      });
-      playgroundEl.appendChild(el);
-    });
+    hits = 0;
+    hitsCounter.textContent = `0 / ${HITS_NEEDED}`;
+    clearShapes();
+    scheduleSpawn();
   }
 
-  function makeDraggable(el, piece, onSorted) {
-    let startX = 0, startY = 0, origLeft = 0, origTop = 0, dragging = false;
+  function clearShapes() {
+    if (spawnTimer) { clearTimeout(spawnTimer); spawnTimer = null; }
+    activeShapes.forEach((s) => s.el.remove());
+    activeShapes = [];
+  }
+
+  function scheduleSpawn() {
+    if (!alive) return;
+    spawnShape();
+    // 라운드 진행할수록 더 빠르게
+    const delay = 700 - round * 100 + Math.random() * 400;
+    spawnTimer = setTimeout(scheduleSpawn, delay);
+  }
+
+  function spawnShape() {
+    if (!alive) return;
+    const isTarget = Math.random() < 0.5;
+    const kind = isTarget ? target : pickOther(target);
+    const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+    const size = 50 + Math.floor(Math.random() * 25);
+    const areaRect = playArea.getBoundingClientRect();
+    const W = areaRect.width || 400;
+    const H = areaRect.height || 400;
+    const x = Math.random() * (W - size - 10) + 5;
+    const y = Math.random() * (H - size - 10) + 5;
+
+    const el = document.createElement("div");
+    el.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${size}px;height:${size}px;cursor:pointer;transform:scale(0);transition:transform 0.15s ease-out;user-select:none;touch-action:manipulation`;
+    el.innerHTML = shapeSvg(kind, color, size);
+    const item = { el, isTarget };
+
     el.addEventListener("pointerdown", (e) => {
-      el.setPointerCapture(e.pointerId);
-      startX = e.clientX; startY = e.clientY;
-      origLeft = parseFloat(el.style.left);
-      origTop = parseFloat(el.style.top);
-      dragging = true;
-      el.style.cursor = "grabbing";
-      el.style.zIndex = "100";
-      playClick();
-    });
-    el.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      el.style.left = (origLeft + (e.clientX - startX)) + "px";
-      el.style.top = (origTop + (e.clientY - startY)) + "px";
-    });
-    el.addEventListener("pointerup", (e) => {
-      if (!dragging) return;
-      dragging = false;
-      el.style.cursor = "grab";
-      el.style.zIndex = "";
-      const r = el.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      let dropBin = null;
-      for (const bin of binsEl.querySelectorAll(".sort-bin")) {
-        const br = bin.getBoundingClientRect();
-        if (cx >= br.left && cx <= br.right && cy >= br.top && cy <= br.bottom) {
-          dropBin = bin; break;
+      e.stopPropagation();
+      if (!item.alive) return;
+      item.alive = false;
+      if (isTarget) {
+        playPop(); playGood();
+        hits += 1;
+        hitsCounter.textContent = `${hits} / ${HITS_NEEDED}`;
+        el.style.transform = "scale(1.4)";
+        el.style.opacity = "0";
+        setTimeout(() => el.remove(), 200);
+        if (hits >= HITS_NEEDED) {
+          msg2El.textContent = "잘했어! 🎉";
+          msg2El.className = "msg good";
+          playFanfare();
+          burstConfetti(40);
+          clearShapes();
+          setTimeout(startRound, 900);
         }
-      }
-      if (dropBin && dropBin.dataset.kind === piece.kind) {
-        playGood();
-        dropBin.classList.add("hit");
-        setTimeout(() => dropBin.classList.remove("hit"), 350);
-        el.remove();
-        onSorted();
-      } else if (dropBin) {
+      } else {
         playBad();
         mistakes += 1;
-        el.classList.add("shake");
-        setTimeout(() => {
-          el.classList.remove("shake");
-          el.style.left = origLeft + "px";
-          el.style.top = origTop + "px";
-        }, 300);
-      } else {
-        // 박스 아닌 데에 떨어뜨림 → 원위치
-        el.style.left = origLeft + "px";
-        el.style.top = origTop + "px";
+        el.style.transform = "scale(0.8)";
+        el.style.background = "rgba(255,80,80,0.3)";
+        el.style.borderRadius = "50%";
+        setTimeout(() => el.remove(), 250);
       }
     });
-    el.addEventListener("pointercancel", () => {
-      dragging = false;
-      el.style.cursor = "grab";
-      el.style.zIndex = "";
-      el.style.left = origLeft + "px";
-      el.style.top = origTop + "px";
-    });
+
+    item.alive = true;
+    playArea.appendChild(el);
+    requestAnimationFrame(() => { el.style.transform = "scale(1)"; });
+    activeShapes.push(item);
+
+    // 자동 사라짐
+    const lifetime = Math.max(900, 1800 - round * 200);
+    setTimeout(() => {
+      if (!item.alive) return;
+      item.alive = false;
+      el.style.transform = "scale(0)";
+      setTimeout(() => el.remove(), 200);
+    }, lifetime);
   }
 
   function finish() {
-    playgroundEl.style.display = "none";
-    binsEl.style.display = "none";
+    clearShapes();
     msgEl.textContent = "🎉 끝!";
-    const stars = mistakes === 0 ? 3 : mistakes <= 2 ? 2 : 1;
+    targetShape.innerHTML = "";
+    hitsCounter.textContent = "";
+    const stars = mistakes <= 2 ? 3 : mistakes <= 5 ? 2 : 1;
     msg2El.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득!`;
     msg2El.className = "msg good";
     if (setStarsIfBetter(gameId, stars)) onStarsChange();
@@ -170,7 +153,13 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     wrap.appendChild(btn);
   }
 
+  const obs = new MutationObserver(() => { if (!document.body.contains(playArea)) { alive = false; clearShapes(); obs.disconnect(); } });
+  obs.observe(document.body, { childList: true, subtree: true });
+
   startRound();
 }
 
-function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function pickOther(kind) {
+  const opts = SHAPE_KINDS.filter((s) => s !== kind);
+  return opts[Math.floor(Math.random() * opts.length)];
+}

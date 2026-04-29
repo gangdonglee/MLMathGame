@@ -1,183 +1,298 @@
-// 게임 7 (v2): 거울 격자 — 왼쪽 패턴을 변환(거울/회전)으로 어떻게 바꿔야 할지
-// 옵션 고르는 게 아니라, 빈 격자에 손가락으로 직접 색칠해서 답을 만든다
+// 게임 7 (v3): 거울 격자 — 변환 옵션을 골라 새총으로 스탬프를 발사한다.
+// 발사된 스탬프는 변환된 패턴이 되어 타겟 보드에 찍힌다. 타겟과 일치 = 클리어.
+// (행렬/대칭 = "어떤 변환을 적용할지" 의 직관 + 슬링샷의 액션)
 import { setStarsIfBetter } from "../shared/score.js";
-import { playGood, playBad, playFanfare, playClick } from "../shared/audio.js";
+import { playGood, playBad, playFanfare, playClick, playPop } from "../shared/audio.js";
 import { burstConfetti } from "../shared/celebrate.js";
 
 const N = 4;
-const CELL = 50;
+const CELL = 36;
 const ROUNDS = 4;
+const W = 480;
+const H = 380;
+const SLING_X = W / 2;
+const SLING_Y = H - 60;
+const POWER = 4.5;
+const MAX_PULL = 110;
+const G = 600;
 
 const TRANSFORMS = [
-  { id: "flipH",  label: "좌우 거울 🪞", fn: (g) => g.map((row) => [...row].reverse()) },
-  { id: "flipV",  label: "상하 거울 🔃", fn: (g) => [...g].reverse().map((r) => [...r]) },
-  { id: "rot180", label: "반 바퀴 ↻↻",   fn: (g) => g.map((r) => [...r]).reverse().map((r) => r.reverse()) },
+  { id: "none",   label: "그대로",     fn: (g) => g.map((r) => [...r]) },
+  { id: "flipH",  label: "좌우 거울",  fn: (g) => g.map((r) => [...r].reverse()) },
+  { id: "flipV",  label: "상하 거울",  fn: (g) => [...g].reverse().map((r) => [...r]) },
+  { id: "rot180", label: "반 바퀴",    fn: (g) => g.map((r) => [...r]).reverse().map((r) => r.reverse()) },
 ];
 
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
   let mistakes = 0;
   let alive = true;
+  let lastT = performance.now();
 
   const wrap = document.createElement("div");
   wrap.style.cssText = "width:100%;display:flex;flex-direction:column;align-items:center;gap:10px";
   wrap.innerHTML = `
-    <div class="msg" id="msg">왼쪽 그림을 <b>?</b>처럼 만들면 어떻게 될까? 오른쪽에 직접 색칠!</div>
-    <div id="rule" style="font-size:24px;font-weight:800"></div>
-    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;justify-content:center">
-      <canvas id="src" width="${N*CELL}" height="${N*CELL}"
-              style="background:#fff;border-radius:14px;box-shadow:var(--shadow);touch-action:none"></canvas>
-      <div style="font-size:30px">➜</div>
-      <canvas id="tgt" width="${N*CELL}" height="${N*CELL}"
-              style="background:#fff;border-radius:14px;box-shadow:var(--shadow);cursor:crosshair;touch-action:none"></canvas>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">
-      <button class="btn small secondary" id="clear-btn">지우기</button>
-      <button class="btn" id="check-btn">확인!</button>
-    </div>
+    <div class="msg" id="msg">변환을 골라 새총으로 발사! 타겟에 맞춰!</div>
+    <div id="opts-row" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"></div>
+    <canvas id="cv" width="${W}" height="${H}"
+            style="background:linear-gradient(#bee5ff,#fff7e6);border-radius:18px;box-shadow:var(--shadow);max-width:100%;height:auto;touch-action:none;cursor:grab"></canvas>
     <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
 
-  const srcCv = wrap.querySelector("#src");
-  const tgtCv = wrap.querySelector("#tgt");
-  const srcCtx = srcCv.getContext("2d");
-  const tgtCtx = tgtCv.getContext("2d");
-  const ruleEl = wrap.querySelector("#rule");
+  const cv = wrap.querySelector("#cv");
+  const ctx = cv.getContext("2d");
+  const optsRow = wrap.querySelector("#opts-row");
   const msgEl = wrap.querySelector("#msg");
   const msg2El = wrap.querySelector("#msg2");
-  const clearBtn = wrap.querySelector("#clear-btn");
-  const checkBtn = wrap.querySelector("#check-btn");
 
-  let src;       // [N][N] 0/1
-  let target;    // [N][N] 0/1 (정답)
-  let user;      // [N][N] 0/1 (사용자가 그린 것)
-  let paintMode = 1; // 0 또는 1 (drag 시작 칸의 반대 값)
-  let isDragging = false;
+  let src;             // [N][N]
+  let target;          // [N][N]
+  let correctTransform; // id
+  let chosenTransform = "none";
+  let aiming = null;
+  let stamp = null;     // {x,y,vx,vy,grid}
+  let won = false;
+  let optBtns = [];
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
     round += 1;
-    msgEl.textContent = `${round} / ${ROUNDS} — 같은 모양이 되게 색칠!`;
+    won = false;
+    aiming = null;
+    stamp = null;
+    chosenTransform = "none";
+    msgEl.textContent = `${round} / ${ROUNDS} — 변환 고르고 발사!`;
     msgEl.className = "msg";
     msg2El.textContent = "";
     msg2El.className = "msg";
 
-    const t = TRANSFORMS[Math.floor(Math.random() * TRANSFORMS.length)];
-    ruleEl.textContent = t.label;
     src = randomAsymmetric();
+    const t = TRANSFORMS[1 + Math.floor(Math.random() * (TRANSFORMS.length - 1))];
+    correctTransform = t.id;
     target = t.fn(src);
-    user = Array.from({ length: N }, () => Array(N).fill(0));
 
-    drawBoard(srcCtx, src, false);
-    drawBoard(tgtCtx, user, true);
+    rebuildOpts();
   }
 
-  function drawBoard(ctx, grid, withGuide) {
-    const w = N * CELL;
-    ctx.clearRect(0, 0, w, w);
-    // 격자
-    ctx.strokeStyle = "#eadcb8";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= N; i++) {
-      ctx.beginPath(); ctx.moveTo(i*CELL, 0); ctx.lineTo(i*CELL, w); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, i*CELL); ctx.lineTo(w, i*CELL); ctx.stroke();
-    }
-    // 칸 채우기
-    for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) {
-        if (grid[y][x]) {
-          ctx.fillStyle = "#ff8a4c";
-          ctx.fillRect(x*CELL + 4, y*CELL + 4, CELL - 8, CELL - 8);
-        }
-      }
-    }
-    if (withGuide) {
-      ctx.strokeStyle = "rgba(58,47,30,0.2)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.strokeRect(2, 2, w - 4, w - 4);
-      ctx.setLineDash([]);
+  function rebuildOpts() {
+    optsRow.innerHTML = "";
+    optBtns = TRANSFORMS.map((t) => {
+      const btn = document.createElement("button");
+      btn.className = "btn small secondary";
+      btn.textContent = t.label;
+      btn.dataset.id = t.id;
+      btn.addEventListener("click", () => {
+        if (stamp) return;
+        chosenTransform = t.id;
+        playClick();
+        renderOpts();
+      });
+      optsRow.appendChild(btn);
+      return btn;
+    });
+    renderOpts();
+  }
+
+  function renderOpts() {
+    for (const b of optBtns) {
+      b.style.outline = b.dataset.id === chosenTransform ? "3px solid var(--accent)" : "none";
     }
   }
 
-  function getCell(e, cv) {
+  function getCanvasCoords(e) {
     const rect = cv.getBoundingClientRect();
     const sx = cv.width / rect.width;
     const sy = cv.height / rect.height;
-    const cx = (e.clientX - rect.left) * sx;
-    const cy = (e.clientY - rect.top) * sy;
-    return { x: Math.floor(cx / CELL), y: Math.floor(cy / CELL) };
+    return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy };
   }
 
-  tgtCv.addEventListener("pointerdown", (e) => {
-    tgtCv.setPointerCapture(e.pointerId);
-    const c = getCell(e, tgtCv);
-    if (c.x < 0 || c.x >= N || c.y < 0 || c.y >= N) return;
-    paintMode = user[c.y][c.x] ? 0 : 1; // 클릭한 칸의 반대로 → 드래그 시 같은 동작 반복
-    user[c.y][c.x] = paintMode;
-    isDragging = true;
+  cv.addEventListener("pointerdown", (e) => {
+    if (won || stamp) return;
+    cv.setPointerCapture(e.pointerId);
+    const c = getCanvasCoords(e);
+    aiming = { startX: c.x, startY: c.y, dx: 0, dy: 0 };
+    cv.style.cursor = "grabbing";
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!aiming) return;
+    const c = getCanvasCoords(e);
+    aiming.dx = clamp(c.x - aiming.startX, -MAX_PULL, MAX_PULL);
+    aiming.dy = clamp(c.y - aiming.startY, -10, MAX_PULL);
+  });
+  function release() {
+    if (!aiming) return;
+    cv.style.cursor = "grab";
+    if (Math.hypot(aiming.dx, aiming.dy) < 12) { aiming = null; return; }
+    const tFn = TRANSFORMS.find((x) => x.id === chosenTransform).fn;
+    stamp = {
+      x: SLING_X,
+      y: SLING_Y - 26,
+      vx: -aiming.dx * POWER,
+      vy: -aiming.dy * POWER,
+      grid: tFn(src),
+    };
+    aiming = null;
     playClick();
-    drawBoard(tgtCtx, user, true);
-  });
-  tgtCv.addEventListener("pointermove", (e) => {
-    if (!isDragging) return;
-    const c = getCell(e, tgtCv);
-    if (c.x < 0 || c.x >= N || c.y < 0 || c.y >= N) return;
-    if (user[c.y][c.x] !== paintMode) {
-      user[c.y][c.x] = paintMode;
-      drawBoard(tgtCtx, user, true);
-    }
-  });
-  const endDraw = () => { isDragging = false; };
-  tgtCv.addEventListener("pointerup", endDraw);
-  tgtCv.addEventListener("pointercancel", endDraw);
+  }
+  cv.addEventListener("pointerup", release);
+  cv.addEventListener("pointercancel", () => { aiming = null; cv.style.cursor = "grab"; });
 
-  clearBtn.addEventListener("click", () => {
-    user = Array.from({ length: N }, () => Array(N).fill(0));
-    drawBoard(tgtCtx, user, true);
-    msg2El.textContent = "";
-  });
+  // 타겟 박스 (위쪽에)
+  const TARGET_BOX = { x: W/2 - (N*CELL)/2, y: 30, w: N*CELL, h: N*CELL };
 
-  checkBtn.addEventListener("click", () => {
-    let correct = true;
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      if (user[y][x] !== target[y][x]) { correct = false; break; }
+  function tick(now) {
+    if (!alive) return;
+    const dt = Math.min(0.03, (now - lastT) / 1000);
+    lastT = now;
+
+    if (stamp && !won) {
+      stamp.vy += G * dt;
+      stamp.x += stamp.vx * dt;
+      stamp.y += stamp.vy * dt;
+
+      // 타겟 박스에 닿았는지
+      if (stamp.x >= TARGET_BOX.x && stamp.x <= TARGET_BOX.x + TARGET_BOX.w &&
+          stamp.y >= TARGET_BOX.y && stamp.y <= TARGET_BOX.y + TARGET_BOX.h) {
+        // 일치 검사
+        const matches = JSON.stringify(stamp.grid) === JSON.stringify(target);
+        if (matches) {
+          won = true;
+          playPop(); playGood(); playFanfare();
+          msg2El.textContent = "딱 맞췄어! 🎉";
+          msg2El.className = "msg good";
+          burstConfetti(40);
+          setTimeout(startRound, 1300);
+        } else {
+          playBad();
+          mistakes += 1;
+          msg2El.textContent = chosenTransform === correctTransform ? "조금 빗나갔어!" : "변환을 다시 골라봐!";
+          msg2El.className = "msg bad";
+        }
+        stamp = null;
+      } else if (stamp.y > H + 50 || stamp.x < -50 || stamp.x > W + 50) {
+        // 빗나감
+        msg2El.textContent = "다시 쏴봐!";
+        msg2El.className = "msg";
+        stamp = null;
+      }
     }
-    if (correct) {
-      playGood(); playFanfare();
-      msg2El.textContent = "맞았어! 🎉";
-      msg2El.className = "msg good";
-      burstConfetti(40);
-      setTimeout(startRound, 1100);
-    } else {
-      playBad();
-      mistakes += 1;
-      msg2El.textContent = "조금 달라! 다시 봐봐";
-      msg2El.className = "msg bad";
-      tgtCv.classList.add("shake");
-      setTimeout(() => tgtCv.classList.remove("shake"), 400);
+
+    draw();
+    requestAnimationFrame(tick);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // 타겟 박스 (정답 패턴 윤곽)
+    ctx.strokeStyle = "#3a2f1e";
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 6]);
+    ctx.strokeRect(TARGET_BOX.x, TARGET_BOX.y, TARGET_BOX.w, TARGET_BOX.h);
+    ctx.setLineDash([]);
+    drawGrid(target, TARGET_BOX.x, TARGET_BOX.y, "rgba(58,47,30,0.55)");
+    ctx.fillStyle = "#3a2f1e";
+    ctx.font = "bold 14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("이 모양에 맞춰서 ▼", W/2, TARGET_BOX.y + N*CELL + 22);
+
+    // 원본 (왼쪽 하단)
+    const SRC_BOX = { x: 20, y: H - 30 - N*CELL };
+    drawGrid(src, SRC_BOX.x, SRC_BOX.y, "#ff8a4c");
+    ctx.fillStyle = "#3a2f1e";
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("원본", SRC_BOX.x + N*CELL/2, SRC_BOX.y - 6);
+
+    // 새총
+    ctx.strokeStyle = "#7a4f1a";
+    ctx.lineWidth = 9;
+    ctx.lineCap = "round";
+    const armY = SLING_Y - 40;
+    ctx.beginPath(); ctx.moveTo(SLING_X - 22, armY - 22); ctx.lineTo(SLING_X, SLING_Y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(SLING_X + 22, armY - 22); ctx.lineTo(SLING_X, SLING_Y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(SLING_X, SLING_Y); ctx.lineTo(SLING_X, H - 8); ctx.stroke();
+
+    // 고무줄/스탬프 미리보기
+    if (aiming) {
+      const px = SLING_X + aiming.dx;
+      const py = SLING_Y - 26 + aiming.dy;
+      ctx.strokeStyle = "#3a2f1e";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(SLING_X - 22, armY - 22);
+      ctx.lineTo(px, py);
+      ctx.lineTo(SLING_X + 22, armY - 22);
+      ctx.stroke();
+      const tFn = TRANSFORMS.find((x) => x.id === chosenTransform).fn;
+      const previewGrid = tFn(src);
+      drawStampMini(previewGrid, px, py, 16);
+    } else if (!stamp) {
+      ctx.strokeStyle = "#3a2f1e";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(SLING_X - 22, armY - 22);
+      ctx.lineTo(SLING_X, SLING_Y - 26);
+      ctx.lineTo(SLING_X + 22, armY - 22);
+      ctx.stroke();
+      const tFn = TRANSFORMS.find((x) => x.id === chosenTransform).fn;
+      drawStampMini(tFn(src), SLING_X, SLING_Y - 26, 16);
     }
-  });
+
+    // 날아가는 스탬프
+    if (stamp) drawStampMini(stamp.grid, stamp.x, stamp.y, 18);
+  }
+
+  function drawGrid(grid, ox, oy, color) {
+    ctx.strokeStyle = "rgba(58,47,30,0.15)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= N; i++) {
+      ctx.beginPath(); ctx.moveTo(ox + i*CELL, oy); ctx.lineTo(ox + i*CELL, oy + N*CELL); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ox, oy + i*CELL); ctx.lineTo(ox + N*CELL, oy + i*CELL); ctx.stroke();
+    }
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (grid[y][x]) {
+          ctx.fillStyle = color;
+          ctx.fillRect(ox + x*CELL + 3, oy + y*CELL + 3, CELL - 6, CELL - 6);
+        }
+      }
+    }
+  }
+  function drawStampMini(grid, cx, cy, size) {
+    const cellSz = size / N;
+    const ox = cx - size/2;
+    const oy = cy - size/2;
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(ox - 2, oy - 2, size + 4, size + 4);
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (grid[y][x]) {
+          ctx.fillStyle = "#ff5a5f";
+          ctx.fillRect(ox + x*cellSz + 0.5, oy + y*cellSz + 0.5, cellSz - 1, cellSz - 1);
+        }
+      }
+    }
+    ctx.strokeStyle = "#3a2f1e";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(ox - 2, oy - 2, size + 4, size + 4);
+  }
 
   function randomAsymmetric() {
     for (let attempt = 0; attempt < 30; attempt++) {
       const g = Array.from({ length: N }, () => Array.from({ length: N }, () => Math.random() < 0.45 ? 1 : 0));
       const variants = TRANSFORMS.map((t) => JSON.stringify(t.fn(g)));
-      variants.push(JSON.stringify(g));
-      if (new Set(variants).size === TRANSFORMS.length + 1) return g;
+      if (new Set(variants).size === TRANSFORMS.length) return g;
     }
     return [[1,0,0,0],[1,1,0,0],[1,0,0,0],[0,0,0,1]];
   }
 
   function finish() {
-    srcCv.style.display = "none";
-    tgtCv.style.display = "none";
-    clearBtn.style.display = "none";
-    checkBtn.style.display = "none";
-    ruleEl.textContent = "";
+    cv.style.display = "none";
+    optsRow.style.display = "none";
     msgEl.textContent = "🎉 끝!";
-    const stars = mistakes === 0 ? 3 : mistakes <= 2 ? 2 : 1;
+    const stars = mistakes <= 1 ? 3 : mistakes <= 4 ? 2 : 1;
     msg2El.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득!`;
     msg2El.className = "msg good";
     if (setStarsIfBetter(gameId, stars)) onStarsChange();
@@ -189,8 +304,11 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     wrap.appendChild(btn);
   }
 
-  const obs = new MutationObserver(() => { if (!document.body.contains(srcCv)) { alive = false; obs.disconnect(); } });
+  const obs = new MutationObserver(() => { if (!document.body.contains(cv)) { alive = false; obs.disconnect(); } });
   obs.observe(document.body, { childList: true, subtree: true });
 
   startRound();
+  requestAnimationFrame(tick);
 }
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }

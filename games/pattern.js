@@ -1,174 +1,159 @@
-// 게임 3 (v2): 다음에 올 건? — 보기에서 정답 도형을 빈 칸으로 끌어다 놓기
-// (탭이 아니라 드래그 — 패턴 = 규칙을 채워 완성하는 행위)
+// 게임 3 (v3): 다음에 올 건? — Simon 풍. 색깔 시퀀스를 보여주면 똑같이 따라하기
+// (패턴 = 시간 순서 규칙. 시각+청각 시퀀스로 액션화)
 import { setStarsIfBetter } from "../shared/score.js";
-import { playGood, playBad, playFanfare, playClick } from "../shared/audio.js";
+import { playGood, playBad, playFanfare } from "../shared/audio.js";
 import { burstConfetti } from "../shared/celebrate.js";
 
-const SYMBOLS = ["🔴", "🔵", "🟡", "🟢", "🟣", "🟠"];
-const ROUNDS = 5;
+const PADS = [
+  { color: "#ff5a5f", lit: "#ffb0b3", freq: 261.63 }, // C4
+  { color: "#5aa5ff", lit: "#b0d0ff", freq: 329.63 }, // E4
+  { color: "#5acc77", lit: "#b0e6c0", freq: 392.00 }, // G4
+  { color: "#ffce40", lit: "#ffe79c", freq: 523.25 }, // C5
+];
+const ROUNDS = 5; // sequence length: 2,3,4,5,6
+
+let audioCtx = null;
+function tone(freq, dur = 0.35) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const t0 = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.18, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.05);
+  } catch {}
+}
 
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
   let mistakes = 0;
+  let alive = true;
+  let sequence = [];
+  let userIndex = 0;
+  let isShowing = false;
+  let attemptCount = 0;
 
   const wrap = document.createElement("div");
   wrap.style.cssText = "width:100%;display:flex;flex-direction:column;align-items:center;gap:14px";
   wrap.innerHTML = `
-    <div class="msg" id="msg">빈 칸에 들어갈 친구를 끌어다 놓아!</div>
-    <div class="pattern-row" id="row" style="margin-top:6px"></div>
-    <div style="font-size:14px;color:var(--ink-soft)">↓ 보기 ↓</div>
-    <div id="opts-zone" style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;min-height:80px;touch-action:none"></div>
+    <div class="msg" id="msg">잘 보고 똑같이 눌러봐!</div>
+    <div id="pad-grid" style="display:grid;grid-template-columns:repeat(2,140px);grid-template-rows:repeat(2,140px);gap:14px;touch-action:manipulation"></div>
     <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
 
-  const rowEl = wrap.querySelector("#row");
-  const optsEl = wrap.querySelector("#opts-zone");
+  const grid = wrap.querySelector("#pad-grid");
   const msgEl = wrap.querySelector("#msg");
   const msg2El = wrap.querySelector("#msg2");
 
-  let answer = "";
-  let qCellEl = null;
-  let roundDone = false;
+  const padEls = PADS.map((p, i) => {
+    const el = document.createElement("button");
+    el.className = "simon-pad";
+    el.style.cssText = `background:${p.color};border:none;border-radius:24px;box-shadow:var(--shadow);cursor:pointer;transition:background 0.1s ease, transform 0.05s ease;font-family:inherit;`;
+    el.dataset.idx = i;
+    el.addEventListener("pointerdown", () => onUserTap(i));
+    grid.appendChild(el);
+    return el;
+  });
+
+  function flashPad(i, dur = 380) {
+    const el = padEls[i];
+    el.style.background = PADS[i].lit;
+    el.style.transform = "scale(0.95)";
+    tone(PADS[i].freq, dur / 1000);
+    setTimeout(() => {
+      el.style.background = PADS[i].color;
+      el.style.transform = "";
+    }, dur);
+  }
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
     round += 1;
-    msgEl.textContent = `${round} / ${ROUNDS} — 다음에 올 친구는?`;
+    attemptCount = 0;
+    const length = round + 1; // 2,3,4,5,6
+    sequence = [];
+    let last = -1;
+    for (let i = 0; i < length; i++) {
+      let n;
+      do { n = Math.floor(Math.random() * 4); } while (n === last && Math.random() < 0.5);
+      sequence.push(n);
+      last = n;
+    }
+    msgEl.textContent = `${round} / ${ROUNDS} — 잘 봐!`;
     msgEl.className = "msg";
     msg2El.textContent = "";
     msg2El.className = "msg";
-    roundDone = false;
-
-    const { sequence, ans, distractors } = makePattern(round);
-    answer = ans;
-
-    rowEl.innerHTML = "";
-    sequence.forEach((s) => {
-      const cell = document.createElement("div");
-      cell.className = "pat-cell";
-      cell.textContent = s;
-      rowEl.appendChild(cell);
-    });
-    qCellEl = document.createElement("div");
-    qCellEl.className = "pat-cell q";
-    qCellEl.textContent = "?";
-    rowEl.appendChild(qCellEl);
-
-    const choices = shuffle([ans, ...distractors]);
-    optsEl.innerHTML = "";
-    choices.forEach((s) => {
-      const opt = document.createElement("div");
-      opt.className = "pat-cell";
-      opt.style.cssText = "cursor:grab;touch-action:none;user-select:none";
-      opt.textContent = s;
-      makeDraggable(opt, s);
-      optsEl.appendChild(opt);
-    });
+    setTimeout(showSequence, 600);
   }
 
-  function makeDraggable(el, sym) {
-    let startX = 0, startY = 0, origLeft = 0, origTop = 0, dragging = false;
-    el.addEventListener("pointerdown", (e) => {
-      if (roundDone) return;
-      el.setPointerCapture(e.pointerId);
-      const r = el.getBoundingClientRect();
-      // 절대 위치로 변환
-      el.style.position = "fixed";
-      el.style.left = r.left + "px";
-      el.style.top = r.top + "px";
-      el.style.zIndex = "100";
-      origLeft = r.left;
-      origTop = r.top;
-      startX = e.clientX;
-      startY = e.clientY;
-      dragging = true;
-      el.style.cursor = "grabbing";
-      playClick();
-    });
-    el.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      el.style.left = (origLeft + (e.clientX - startX)) + "px";
-      el.style.top = (origTop + (e.clientY - startY)) + "px";
-    });
-    const release = () => {
-      if (!dragging) return;
-      dragging = false;
-      el.style.cursor = "grab";
-      // 빈 칸 위에 떨어졌나?
-      const elR = el.getBoundingClientRect();
-      const cx = elR.left + elR.width / 2;
-      const cy = elR.top + elR.height / 2;
-      const qR = qCellEl.getBoundingClientRect();
-      const onQ = cx >= qR.left && cx <= qR.right && cy >= qR.top && cy <= qR.bottom;
-      if (onQ) {
-        if (sym === answer) {
-          roundDone = true;
-          playGood();
-          qCellEl.textContent = sym;
-          qCellEl.classList.remove("q");
-          msg2El.textContent = "맞았어! ✨";
-          msg2El.className = "msg good";
-          el.remove();
-          setTimeout(startRound, 800);
-        } else {
-          playBad();
-          mistakes += 1;
-          el.classList.add("shake");
-          setTimeout(() => {
-            el.classList.remove("shake");
-            // 원위치
-            el.style.position = "";
-            el.style.left = "";
-            el.style.top = "";
-            el.style.zIndex = "";
-          }, 300);
-        }
-      } else {
-        // 원위치
-        el.style.position = "";
-        el.style.left = "";
-        el.style.top = "";
-        el.style.zIndex = "";
+  function showSequence() {
+    isShowing = true;
+    msgEl.textContent = "잘 봐!";
+    let i = 0;
+    const tick = () => {
+      if (!alive) return;
+      if (i >= sequence.length) {
+        isShowing = false;
+        userIndex = 0;
+        msgEl.textContent = "이제 너 차례! 똑같이 눌러봐";
+        return;
       }
+      flashPad(sequence[i], 400);
+      i++;
+      setTimeout(tick, 600);
     };
-    el.addEventListener("pointerup", release);
-    el.addEventListener("pointercancel", release);
+    tick();
+  }
+
+  function onUserTap(i) {
+    if (isShowing || !alive) return;
+    flashPad(i, 200);
+    if (i === sequence[userIndex]) {
+      userIndex++;
+      if (userIndex >= sequence.length) {
+        playGood(); playFanfare();
+        msg2El.textContent = "맞았어! 🎉";
+        msg2El.className = "msg good";
+        burstConfetti(30);
+        setTimeout(startRound, 900);
+      }
+    } else {
+      playBad();
+      mistakes += 1;
+      attemptCount += 1;
+      userIndex = 0;
+      msg2El.textContent = "앗! 다시 보여줄게";
+      msg2El.className = "msg bad";
+      setTimeout(showSequence, 1100);
+    }
   }
 
   function finish() {
-    rowEl.innerHTML = "🎉";
-    optsEl.innerHTML = "";
-    msgEl.textContent = "끝!";
-    const stars = mistakes === 0 ? 3 : mistakes <= 2 ? 2 : 1;
+    grid.style.display = "none";
+    msgEl.textContent = "🎉 끝!";
+    const stars = mistakes <= 1 ? 3 : mistakes <= 4 ? 2 : 1;
     msg2El.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득!`;
     msg2El.className = "msg good";
     if (setStarsIfBetter(gameId, stars)) onStarsChange();
-    playFanfare();
     burstConfetti();
     const btn = document.createElement("button");
     btn.className = "btn";
     btn.textContent = "또 할래";
-    btn.style.marginTop = "14px";
     btn.addEventListener("click", () => { container.innerHTML = ""; mountGame(container, { gameId, onStarsChange, backToMenu }); });
     wrap.appendChild(btn);
   }
 
+  const obs = new MutationObserver(() => { if (!document.body.contains(grid)) { alive = false; obs.disconnect(); } });
+  obs.observe(document.body, { childList: true, subtree: true });
+
   startRound();
 }
 
-function makePattern(round) {
-  const pool = shuffle([...SYMBOLS]);
-  let unit;
-  if (round <= 2)      unit = [pool[0], pool[1]];
-  else if (round <= 4) unit = [pool[0], pool[1], pool[2]];
-  else                 unit = [pool[0], pool[0], pool[1], pool[1]];
-  const reps = 2;
-  const flat = [];
-  for (let i = 0; i < reps; i++) flat.push(...unit);
-  const visible = flat.slice(0, flat.length - 1);
-  const ans = flat[flat.length - 1];
-  const distractors = shuffle(pool.filter((s) => s !== ans)).slice(0, 2);
-  return { sequence: visible, ans, distractors };
-}
-function shuffle(a) { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function playGoodLocal() {} // unused but kept for symmetry
