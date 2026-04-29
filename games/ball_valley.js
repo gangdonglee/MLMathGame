@@ -29,6 +29,9 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     <div class="msg" id="msg">새총으로 공 발사! 가장 깊은 골짜기 (큰 별) 에 안착시켜!</div>
     <canvas id="cv" width="${W}" height="${H}"
             style="background:linear-gradient(#bee5ff,#fff7e6);border-radius:18px;box-shadow:var(--shadow);max-width:100%;height:auto;touch-action:none;cursor:grab"></canvas>
+    <div class="time-bar" style="width:100%;max-width:${W}px;height:14px;background:#eee;border-radius:7px;overflow:hidden">
+      <div id="time-fill" style="height:100%;background:var(--good);width:100%;transition:width 0.1s linear"></div>
+    </div>
     <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
@@ -37,12 +40,16 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   const ctx = cv.getContext("2d");
   const msgEl = wrap.querySelector("#msg");
   const msg2El = wrap.querySelector("#msg2");
+  const timeFill = wrap.querySelector("#time-fill");
 
+  const TIME_LIMIT = 25;
   let curve, valleys, deepestIdx;
   let ball = null; // {x,y,vx,vy,mode:'fly'|'roll'|'stopped', stopTime}
   let aiming = null;
   let won = false;
   let attempts = 0;
+  let timeLeft = TIME_LIMIT;
+  let timedOut = false;
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
@@ -51,6 +58,8 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     ball = null;
     aiming = null;
     attempts = 0;
+    timeLeft = TIME_LIMIT;
+    timedOut = false;
     msgEl.textContent = `${round} / ${ROUNDS} — 새총 당겼다 놓아!`;
     msgEl.className = "msg";
     msg2El.textContent = "";
@@ -134,6 +143,22 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     if (!alive) return;
     const dt = Math.min(0.03, (now - lastT) / 1000);
     lastT = now;
+
+    // 시간
+    if (!won && !timedOut) {
+      timeLeft -= dt;
+      timeFill.style.width = (Math.max(0, timeLeft / TIME_LIMIT) * 100) + "%";
+      timeFill.style.background = timeLeft / TIME_LIMIT < 0.3 ? "var(--bad)" : "var(--good)";
+      if (timeLeft <= 0) {
+        timedOut = true;
+        mistakes += 1;
+        playBad();
+        msg2El.textContent = "시간 초과! 다시!";
+        msg2El.className = "msg bad";
+        round -= 1;
+        setTimeout(startRound, 1100);
+      }
+    }
 
     if (ball && !won) {
       if (ball.mode === "fly") {

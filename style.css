@@ -344,6 +344,11 @@ canvas { display: block; touch-action: none; }
 .jar .draws span.blue { background: var(--blue); }
 .jar .name { margin-top: 8px; }
 
+/* Time bar (게임별 제한시간 공통) */
+.time-bar {
+  margin: 4px 0;
+}
+
 /* Simon pads (pattern v3) */
 .simon-pad {
   outline: none;

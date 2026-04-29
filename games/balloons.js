@@ -28,6 +28,9 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     <div class="equation" id="eq" style="font-size:42px;text-align:center">…</div>
     <canvas id="cv" width="${W}" height="${H}"
             style="background:linear-gradient(#bee5ff,#fff7e6);border-radius:18px;box-shadow:var(--shadow);max-width:100%;height:auto;touch-action:none;cursor:grab"></canvas>
+    <div class="time-bar" style="width:100%;max-width:${W}px;height:14px;background:#eee;border-radius:7px;overflow:hidden">
+      <div id="time-fill" style="height:100%;background:var(--good);width:100%;transition:width 0.1s linear"></div>
+    </div>
     <div class="msg" id="msg">새총을 당겼다 놓아 정답 풍선을 맞혀!</div>
   `;
   container.appendChild(wrap);
@@ -36,12 +39,16 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   const ctx = cv.getContext("2d");
   const eqEl = wrap.querySelector("#eq");
   const msgEl = wrap.querySelector("#msg");
+  const timeFill = wrap.querySelector("#time-fill");
 
+  const TIME_LIMIT = 12; // 식 1개당 12초
   let balloons = [];
   let answer = 0;
   let pebble = null;
   let aiming = null; // { startX, startY, dx, dy }
   let won = false;
+  let timeLeft = TIME_LIMIT;
+  let timedOut = false;
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
@@ -49,6 +56,8 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     won = false;
     pebble = null;
     aiming = null;
+    timeLeft = TIME_LIMIT;
+    timedOut = false;
 
     const a = randInt(1, 9);
     const b = randInt(1, 9);
@@ -117,6 +126,22 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     if (!alive) return;
     const dt = Math.min(0.04, (now - lastT) / 1000);
     lastT = now;
+
+    // 시간 차감
+    if (!won && !timedOut) {
+      timeLeft -= dt;
+      timeFill.style.width = (Math.max(0, timeLeft / TIME_LIMIT) * 100) + "%";
+      timeFill.style.background = timeLeft / TIME_LIMIT < 0.3 ? "var(--bad)" : "var(--good)";
+      if (timeLeft <= 0) {
+        timedOut = true;
+        mistakes += 1;
+        playBad();
+        msgEl.textContent = "시간 초과! 다시!";
+        msgEl.className = "msg bad";
+        round -= 1;
+        setTimeout(startRound, 1000);
+      }
+    }
 
     // 풍선 떠다니기
     for (const b of balloons) {

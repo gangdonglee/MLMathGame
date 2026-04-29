@@ -36,6 +36,9 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
       <span>이거:</span><div id="target-shape"></div><span id="hits-counter">0 / ${HITS_NEEDED}</span>
     </div>
     <div id="play-area" style="position:relative;width:100%;max-width:420px;height:400px;background:#fff7e6;border-radius:18px;box-shadow:var(--shadow);overflow:hidden;touch-action:manipulation"></div>
+    <div class="time-bar" style="width:100%;max-width:420px;height:14px;background:#eee;border-radius:7px;overflow:hidden">
+      <div id="time-fill" style="height:100%;background:var(--good);width:100%;transition:width 0.1s linear"></div>
+    </div>
     <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
@@ -45,6 +48,12 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   const hitsCounter = wrap.querySelector("#hits-counter");
   const msgEl = wrap.querySelector("#msg");
   const msg2El = wrap.querySelector("#msg2");
+  const timeFill = wrap.querySelector("#time-fill");
+
+  const TIME_LIMIT = 18;
+  let timeLeft = TIME_LIMIT;
+  let timeTimer = null;
+  let lastT = performance.now();
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
@@ -57,8 +66,33 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     msg2El.className = "msg";
     hits = 0;
     hitsCounter.textContent = `0 / ${HITS_NEEDED}`;
+    timeLeft = TIME_LIMIT;
+    lastT = performance.now();
     clearShapes();
     scheduleSpawn();
+    if (!timeTimer) tickTime();
+  }
+
+  function tickTime() {
+    if (!alive) return;
+    const now = performance.now();
+    const dt = (now - lastT) / 1000;
+    lastT = now;
+    if (hits < HITS_NEEDED && spawnTimer) {
+      timeLeft -= dt;
+      timeFill.style.width = (Math.max(0, timeLeft / TIME_LIMIT) * 100) + "%";
+      timeFill.style.background = timeLeft / TIME_LIMIT < 0.3 ? "var(--bad)" : "var(--good)";
+      if (timeLeft <= 0 && spawnTimer) {
+        clearShapes();
+        mistakes += 1;
+        playBad();
+        msg2El.textContent = "시간 초과! 다시!";
+        msg2El.className = "msg bad";
+        round -= 1;
+        setTimeout(startRound, 1000);
+      }
+    }
+    timeTimer = requestAnimationFrame(tickTime);
   }
 
   function clearShapes() {
