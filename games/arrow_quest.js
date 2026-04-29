@@ -1,4 +1,5 @@
-// 게임 4: 별 모으기 — 화살표로 캐릭터 움직여 모든 별 줍기 (벡터 직관)
+// 게임 4 (v2): 별 모으기 — 손가락으로 별을 모두 거치는 경로를 한 번에 그리고
+// 출발 버튼 누르면 토끼가 그 경로를 따라 달려감 (벡터 = 단위 이동의 합)
 import { setStarsIfBetter } from "../shared/score.js";
 import { playGood, playBad, playFanfare, playClick } from "../shared/audio.js";
 import { burstConfetti } from "../shared/celebrate.js";
@@ -9,148 +10,231 @@ const ROUNDS = 4;
 
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
-  let totalMoves = 0;
-  let optimalMoves = 0;
+  let mistakes = 0;
+  let alive = true;
 
   const wrap = document.createElement("div");
-  wrap.className = "aq-stage";
+  wrap.style.cssText = "width:100%;display:flex;flex-direction:column;align-items:center;gap:12px";
   wrap.innerHTML = `
-    <div class="msg" id="msg">별을 모두 모아줘! ⭐</div>
-    <canvas id="board" width="${GRID * CELL}" height="${GRID * CELL}" style="background:#fff;border-radius:18px;box-shadow:var(--shadow)"></canvas>
-    <div class="aq-pad">
-      <div class="arrow spacer"></div>
-      <button class="arrow" data-d="up">↑</button>
-      <div class="arrow spacer"></div>
-      <button class="arrow" data-d="left">←</button>
-      <div class="arrow spacer"></div>
-      <button class="arrow" data-d="right">→</button>
-      <div class="arrow spacer"></div>
-      <button class="arrow" data-d="down">↓</button>
-      <div class="arrow spacer"></div>
+    <div class="msg" id="msg">손가락으로 별을 모두 지나는 길을 그어!</div>
+    <canvas id="cv" width="${GRID*CELL}" height="${GRID*CELL}"
+            style="background:#fff7e6;border-radius:18px;box-shadow:var(--shadow);max-width:100%;height:auto;touch-action:none;cursor:crosshair"></canvas>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">
+      <button class="btn small secondary" id="reset-btn">다시 그리기</button>
+      <button class="btn" id="go-btn">출발!</button>
     </div>
+    <div class="msg" id="msg2"></div>
   `;
   container.appendChild(wrap);
 
-  const canvas = wrap.querySelector("#board");
-  const ctx = canvas.getContext("2d");
+  const cv = wrap.querySelector("#cv");
+  const ctx = cv.getContext("2d");
   const msgEl = wrap.querySelector("#msg");
-  const buttons = wrap.querySelectorAll(".arrow[data-d]");
-  buttons.forEach((b) => b.addEventListener("click", () => move(b.dataset.d)));
+  const msg2El = wrap.querySelector("#msg2");
+  const resetBtn = wrap.querySelector("#reset-btn");
+  const goBtn = wrap.querySelector("#go-btn");
 
-  let player, stars, won;
+  let path = [];
+  let stars = [];
+  let start = { x: 0, y: GRID - 1 };
+  let isDragging = false;
+  let isAnimating = false;
+  let animProgress = 0;
+  let lastT = performance.now();
 
   function startRound() {
     if (round >= ROUNDS) { finish(); return; }
     round += 1;
-    won = false;
-    msgEl.textContent = `${round} / ${ROUNDS} 라운드`;
+    isAnimating = false;
+    animProgress = 0;
+    msgEl.textContent = `${round} / ${ROUNDS} — 별을 모두 지나는 길을 그어!`;
     msgEl.className = "msg";
-    player = { x: 0, y: GRID - 1 };
+    msg2El.textContent = "";
+    msg2El.className = "msg";
+
+    start = { x: 0, y: GRID - 1 };
+    path = [start];
+
     stars = [];
-    const starCount = 1 + Math.min(round, 3); // 2,3,4,4
+    const starCount = 1 + Math.min(round, 3);
     while (stars.length < starCount) {
       const x = Math.floor(Math.random() * GRID);
       const y = Math.floor(Math.random() * GRID);
-      if ((x === player.x && y === player.y) || stars.some((s) => s.x === x && s.y === y)) continue;
+      if ((x === start.x && y === start.y) || stars.some((s) => s.x === x && s.y === y)) continue;
       stars.push({ x, y });
     }
-    optimalMoves = stars.reduce((sum, s, i, arr) => {
-      const prev = i === 0 ? player : arr[i - 1];
-      return sum + Math.abs(s.x - prev.x) + Math.abs(s.y - prev.y);
-    }, 0);
-    draw();
   }
 
-  function move(dir) {
-    if (won) return;
+  function getCell(e) {
+    const rect = cv.getBoundingClientRect();
+    const sx = cv.width / rect.width;
+    const sy = cv.height / rect.height;
+    const cx = (e.clientX - rect.left) * sx;
+    const cy = (e.clientY - rect.top) * sy;
+    return { x: Math.floor(cx / CELL), y: Math.floor(cy / CELL) };
+  }
+  const adj = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1;
+  const inPath = (c) => path.some((p) => p.x === c.x && p.y === c.y);
+
+  cv.addEventListener("pointerdown", (e) => {
+    if (isAnimating) return;
+    cv.setPointerCapture(e.pointerId);
+    const cell = getCell(e);
+    // 새로 그리기 시작
+    path = [start];
+    isDragging = true;
     playClick();
-    const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[dir];
-    const nx = player.x + d[0];
-    const ny = player.y + d[1];
-    if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
+    // 첫 칸이 시작칸 옆이면 바로 추가
+    if (adj(start, cell)) path.push(cell);
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!isDragging || isAnimating) return;
+    const cell = getCell(e);
+    if (cell.x < 0 || cell.x >= GRID || cell.y < 0 || cell.y >= GRID) return;
+    const last = path[path.length - 1];
+    if (cell.x === last.x && cell.y === last.y) return;
+    // 백트랙
+    if (path.length >= 2) {
+      const prev = path[path.length - 2];
+      if (cell.x === prev.x && cell.y === prev.y) {
+        path.pop();
+        return;
+      }
+    }
+    if (adj(last, cell) && !inPath(cell)) {
+      path.push(cell);
+      if (stars.some((s) => s.x === cell.x && s.y === cell.y)) playGood();
+      else playClick();
+    }
+  });
+  const endDrag = () => { isDragging = false; };
+  cv.addEventListener("pointerup", endDrag);
+  cv.addEventListener("pointercancel", endDrag);
+
+  resetBtn.addEventListener("click", () => {
+    if (isAnimating) return;
+    path = [start];
+    msg2El.textContent = "";
+    msg2El.className = "msg";
+  });
+
+  goBtn.addEventListener("click", () => {
+    if (isAnimating) return;
+    if (path.length < 2) {
       playBad();
-      canvas.classList.add("shake");
-      setTimeout(() => canvas.classList.remove("shake"), 400);
+      msg2El.textContent = "길을 먼저 그어!";
+      msg2El.className = "msg bad";
       return;
     }
-    player.x = nx; player.y = ny;
-    totalMoves += 1;
-    const idx = stars.findIndex((s) => s.x === nx && s.y === ny);
-    if (idx >= 0) {
-      stars.splice(idx, 1);
-      playGood();
+    const allStars = stars.every((s) => path.some((p) => p.x === s.x && p.y === s.y));
+    if (!allStars) {
+      playBad();
+      msg2El.textContent = "별을 다 못 지났어! 더 그어!";
+      msg2El.className = "msg bad";
+      mistakes += 1;
+      cv.classList.add("shake");
+      setTimeout(() => cv.classList.remove("shake"), 400);
+      return;
+    }
+    isAnimating = true;
+    animProgress = 0;
+    msg2El.textContent = "";
+  });
+
+  function tick(now) {
+    if (!alive) return;
+    const dt = Math.min(0.05, (now - lastT) / 1000);
+    lastT = now;
+    if (isAnimating) {
+      animProgress += dt * 6; // 6 cells/sec
+      if (animProgress >= path.length - 1) {
+        msg2El.textContent = "도착! 🎉";
+        msg2El.className = "msg good";
+        playFanfare();
+        burstConfetti(40);
+        isAnimating = false;
+        setTimeout(startRound, 1100);
+      }
     }
     draw();
-    if (stars.length === 0) {
-      won = true;
-      msgEl.textContent = "다 모았다! 🎉";
-      msgEl.className = "msg good";
-      playFanfare();
-      burstConfetti(40);
-      setTimeout(startRound, 1100);
-    }
+    requestAnimationFrame(tick);
   }
 
   function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, cv.width, cv.height);
     // grid
     ctx.strokeStyle = "#eadcb8";
     ctx.lineWidth = 1;
     for (let i = 0; i <= GRID; i++) {
-      ctx.beginPath(); ctx.moveTo(i * CELL, 0); ctx.lineTo(i * CELL, GRID * CELL); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, i * CELL); ctx.lineTo(GRID * CELL, i * CELL); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(i*CELL, 0); ctx.lineTo(i*CELL, GRID*CELL); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i*CELL); ctx.lineTo(GRID*CELL, i*CELL); ctx.stroke();
+    }
+    // path line
+    if (path.length > 1) {
+      ctx.strokeStyle = "#ff8a4c";
+      ctx.lineWidth = 10;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      for (let i = 0; i < path.length; i++) {
+        const x = path[i].x*CELL + CELL/2;
+        const y = path[i].y*CELL + CELL/2;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // path dots
+    for (let i = 1; i < path.length; i++) {
+      ctx.fillStyle = "#ff8a4c";
+      ctx.beginPath();
+      ctx.arc(path[i].x*CELL + CELL/2, path[i].y*CELL + CELL/2, 6, 0, Math.PI*2);
+      ctx.fill();
     }
     // stars
     for (const s of stars) {
-      drawEmoji("⭐", s.x, s.y);
+      const onPath = path.some((p) => p.x === s.x && p.y === s.y);
+      drawEmoji(onPath ? "✨" : "⭐", s.x, s.y);
     }
-    // player
-    drawEmoji("🐰", player.x, player.y);
+    // rabbit
+    if (isAnimating) {
+      const i = Math.floor(animProgress);
+      const f = animProgress - i;
+      const a = path[Math.min(i, path.length-1)];
+      const b = path[Math.min(i+1, path.length-1)];
+      const x = (a.x + (b.x - a.x) * f) * CELL + CELL/2;
+      const y = (a.y + (b.y - a.y) * f) * CELL + CELL/2;
+      drawEmojiAt("🐰", x, y);
+    } else {
+      drawEmoji("🐰", start.x, start.y);
+    }
   }
-
-  function drawEmoji(ch, x, y) {
+  function drawEmoji(ch, x, y) { drawEmojiAt(ch, x*CELL + CELL/2, y*CELL + CELL/2); }
+  function drawEmojiAt(ch, px, py) {
     ctx.font = "44px serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(ch, x * CELL + CELL / 2, y * CELL + CELL / 2 + 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(ch, px, py + 2);
   }
 
   function finish() {
-    canvas.style.display = "none";
-    wrap.querySelector(".aq-pad").style.display = "none";
-    // 별: 최소 이동수에 가까울수록 별 많이
-    const ratio = optimalMoves > 0 ? totalMoves / Math.max(1, ROUNDS) : 1;
-    // 더 단순히: 총 이동수가 너무 많으면 별 차감
-    // optimal 누적 대비 1.0~1.3 → 3별, 1.3~1.7 → 2별, 그 외 → 1별
-    // 누적 optimal 가 게임마다 다르니 단순 휴리스틱:
-    const stars = totalMoves <= 14 ? 3 : totalMoves <= 22 ? 2 : 1;
-    msgEl.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득!`;
-    msgEl.className = "msg good";
+    cv.style.display = "none";
+    resetBtn.style.display = "none";
+    goBtn.style.display = "none";
+    msgEl.textContent = "🎉 끝!";
+    const stars = mistakes === 0 ? 3 : mistakes <= 2 ? 2 : 1;
+    msg2El.innerHTML = `별 <b>${"⭐".repeat(stars)}</b> 획득!`;
+    msg2El.className = "msg good";
     if (setStarsIfBetter(gameId, stars)) onStarsChange();
     burstConfetti();
     const btn = document.createElement("button");
     btn.className = "btn";
     btn.textContent = "또 할래";
-    btn.style.marginTop = "14px";
     btn.addEventListener("click", () => { container.innerHTML = ""; mountGame(container, { gameId, onStarsChange, backToMenu }); });
     wrap.appendChild(btn);
   }
 
-  // 키보드도 지원
-  const keyHandler = (e) => {
-    const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
-    if (map[e.key]) { e.preventDefault(); move(map[e.key]); }
-  };
-  window.addEventListener("keydown", keyHandler);
-  // cleanup on unmount: container 가 바뀌면 main.js 가 innerHTML="" 호출 → 우리는 키 핸들러만 남음
-  // 간단히 MutationObserver 로 감지
-  const obs = new MutationObserver(() => {
-    if (!document.body.contains(canvas)) {
-      window.removeEventListener("keydown", keyHandler);
-      obs.disconnect();
-    }
-  });
+  const obs = new MutationObserver(() => { if (!document.body.contains(cv)) { alive = false; obs.disconnect(); } });
   obs.observe(document.body, { childList: true, subtree: true });
 
   startRound();
+  requestAnimationFrame(tick);
 }

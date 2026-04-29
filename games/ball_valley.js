@@ -8,11 +8,13 @@ const W = 640;
 const H = 300;
 const ROUNDS = 3;
 const G = 1400;          // 중력 가속도 (px/s²)
-const FRICTION = 1.0;    // 지수 감쇠 계수 (per second). 너무 크면 얕은 골짜기 탈출 불가
+const FRICTION = 1.0;    // 지수 감쇠 계수 (per second)
 const MAX_TILT = 0.45;   // 최대 기울임 (rad ≈ 26°)
 const TILT_PER_PX = 0.003;
-const TILT_RETURN = 4.0; // 손 뗀 후 수평 복귀 속도 (per second)
+const TILT_RETURN = 2.0; // 손 뗀 후 수평 복귀 속도 (느릴수록 추진력 더 오래)
 const BASE_LINE = 90;    // 평지일 때의 지면 윗선 (캔버스 y)
+const WIN_RADIUS = 35;   // 큰 별 정착 인정 반경
+const WIN_DWELL = 1.5;   // 누적 (sustained X) 시간 임계
 
 export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   let round = 0;
@@ -58,10 +60,13 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     const numValleys = round; // 1, 2, 3
     ({ curve, valleys, deepestIdx } = makeTerrain(numValleys));
 
-    // 시작 위치: 가장 깊은 골짜기에서 멀리
+    // 시작 위치
     if (numValleys === 1) {
-      ballX = valleys[0].cx > W / 2 ? 50 : W - 50;
+      // 라운드 1: 골짜기에서 2σ 떨어진 곳 (자동으로 굴러들어가도록 — 메커닉 학습)
+      const v = valleys[0];
+      ballX = v.cx > W / 2 ? Math.max(40, v.cx - 2 * v.sigma) : Math.min(W - 40, v.cx + 2 * v.sigma);
     } else {
+      // 라운드 2+: 가장 깊지 않은 골짜기에 배치 (탈출해야 함)
       const others = valleys.map((_, i) => i).filter((i) => i !== deepestIdx);
       const startIdx = others[Math.floor(Math.random() * others.length)];
       ballX = valleys[startIdx].cx;
@@ -152,11 +157,12 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
       if (ballX < 10) { ballX = 10; ballV = -ballV * 0.3; }
       if (ballX > W - 10) { ballX = W - 10; ballV = -ballV * 0.3; }
 
-      // 정착 감지: 큰 별 근처 + 거의 정지 (기울기 조건은 자동 복귀가 처리)
+      // 정착 감지: 큰 별 근처에 머무는 시간 누적 (sustained 가 아니라 cumulative)
+      // → 진동하면서 라디우스 안팎을 오가도 점점 누적되어 결국 win
       const target = valleys[deepestIdx].cx;
-      if (Math.abs(ballX - target) < 30 && Math.abs(ballV) < 25) {
+      if (Math.abs(ballX - target) < WIN_RADIUS) {
         settledTime += dt;
-        if (settledTime > 0.4) {
+        if (settledTime > WIN_DWELL) {
           won = true;
           totalElapsed += (performance.now() - roundStart) / 1000;
           msgEl.textContent = "딱! 도착! 🎉";
@@ -167,7 +173,8 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
           setTimeout(startRound, 1300);
         }
       } else {
-        settledTime = 0;
+        // 라디우스 밖이면 천천히 감쇠 (완전 리셋은 X)
+        settledTime = Math.max(0, settledTime - dt * 0.5);
       }
     }
 
