@@ -179,8 +179,8 @@ body { min-height: 100dvh; }
 .pop { animation: pop 0.35s ease forwards; }
 
 @keyframes float-up {
-  from { transform: translateY(100dvh); }
-  to { transform: translateY(-160px); }
+  from { transform: translateY(0); }
+  to { transform: translateY(var(--rise, -110vh)); }
 }
 
 /* ===== Game-specific helpers ===== */

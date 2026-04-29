@@ -59,13 +59,14 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     }
     shuffle(cells);
 
+    let roundDone = false;
     gridEl.innerHTML = "";
     cells.forEach((cell, i) => {
       const el = document.createElement("button");
       el.className = "shape-cell";
       el.innerHTML = shapeSvg(cell.kind, cell.color);
       el.addEventListener("click", () => {
-        if (cell.picked) return;
+        if (roundDone || cell.picked) return;
         playClick();
         if (cell.isTarget) {
           cell.picked = true;
@@ -85,6 +86,7 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     function checkRoundDone() {
       const remaining = cells.filter((c) => c.isTarget && !c.picked).length;
       if (remaining === 0) {
+        roundDone = true;
         msgEl.textContent = "모두 찾았다! 👏";
         msgEl.className = "msg good";
         nextBtn.style.display = "inline-flex";

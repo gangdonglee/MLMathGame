@@ -57,9 +57,11 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
   function spawnBalloons(choices, answer) {
     const stageRect = stage.getBoundingClientRect();
     const W = stageRect.width;
+    const stageH = stageRect.height;
     const balloons = [];
     const lanes = choices.length;
     const laneW = W / lanes;
+    let roundDone = false;
 
     choices.forEach((val, i) => {
       const b = document.createElement("div");
@@ -68,10 +70,15 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
       b.style.background = BALLOON_COLORS[(i + Math.floor(Math.random() * 6)) % BALLOON_COLORS.length];
       const left = laneW * i + (laneW - 96) / 2 + (Math.random() - 0.5) * 16;
       b.style.left = `${left}px`;
+      // 풍선이 stage 바닥에서 출발해 stage 위로 빠져나갈 만큼 위로 이동
+      b.style.setProperty("--rise", `-${stageH + 200}px`);
       const dur = 7 + Math.random() * 3;
       b.style.animationDuration = `${dur}s`;
       b.style.animationDelay = `${i * 0.4}s`;
-      b.addEventListener("click", () => onPick(val, answer, b));
+      b.addEventListener("click", () => {
+        if (roundDone) return;
+        onPick(val, answer, b, () => { roundDone = true; });
+      });
       stage.appendChild(b);
       balloons.push(b);
     });
@@ -93,8 +100,9 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     cleanup = () => { clearTimeout(timeout); prevCleanup(); };
   }
 
-  function onPick(val, answer, el) {
+  function onPick(val, answer, el, markDone) {
     if (val === answer) {
+      markDone();
       playPop();
       el.classList.add("pop");
       correct += 1;

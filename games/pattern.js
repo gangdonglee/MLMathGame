@@ -44,6 +44,7 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
     rowEl.appendChild(q);
 
     const choices = shuffle([answer, ...distractors]);
+    let roundDone = false;
     optsEl.innerHTML = "";
     choices.forEach((s) => {
       const btn = document.createElement("button");
@@ -53,7 +54,9 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
       btn.style.fontFamily = "inherit";
       btn.textContent = s;
       btn.addEventListener("click", () => {
+        if (roundDone) return;
         if (s === answer) {
+          roundDone = true;
           playGood();
           q.textContent = s;
           q.classList.remove("q");

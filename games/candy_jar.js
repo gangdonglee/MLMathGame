@@ -81,6 +81,7 @@ export function mountGame(container, { gameId, onStarsChange, backToMenu }) {
         msgEl.textContent = "다 뽑았다! 이제 어느 통이 빨간 사탕 더 많이 나왔는지 골라!";
       }
     } else if (phase === "pick") {
+      phase = "wait"; // 대기 중 추가 클릭 차단
       // 정답 = 실제 더 많이 빨간 통 (관찰 빈도 기준)
       const counts = jars.map((x) => x.draws.filter(Boolean).length);
       const winnerIdx = counts[0] === counts[1] ? (jars[0].redP > jars[1].redP ? 0 : 1) : (counts[0] > counts[1] ? 0 : 1);
