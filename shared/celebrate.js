@@ -1,4 +1,4 @@
-// 색종이 confetti 캔버스. main.js 가 한 번 마운트하면 모든 게임이 burstConfetti() 호출 가능.
+// 색종이 confetti 캔버스
 let canvas = null;
 let ctx = null;
 let particles = [];
@@ -50,8 +50,7 @@ function loop() {
   particles = particles.filter((p) => p.life > 0 && p.y < window.innerHeight + 40);
   for (const p of particles) {
     p.vy += p.g;
-    p.x += p.vx;
-    p.y += p.vy;
+    p.x += p.vx; p.y += p.vy;
     p.rot += p.vr;
     p.life -= 1;
     ctx.save();
@@ -61,9 +60,6 @@ function loop() {
     ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
     ctx.restore();
   }
-  if (particles.length > 0) {
-    raf = requestAnimationFrame(loop);
-  } else {
-    raf = null;
-  }
+  if (particles.length > 0) raf = requestAnimationFrame(loop);
+  else raf = null;
 }

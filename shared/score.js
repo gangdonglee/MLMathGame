@@ -1,34 +1,19 @@
-// 게임별 최고 별 점수 저장 (localStorage)
-const KEY = "math-game-stars-v1";
+// 별 점수 (localStorage)
+const KEY = "hangul-puzzle-stars-v1";
 
 function readAll() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(localStorage.getItem(KEY) || "{}"); }
+  catch { return {}; }
 }
+function writeAll(o) { try { localStorage.setItem(KEY, JSON.stringify(o)); } catch {} }
 
-function writeAll(obj) {
-  try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch {}
-}
-
-export function getStars(gameId) {
-  return readAll()[gameId] || 0;
-}
-
-export function setStarsIfBetter(gameId, stars) {
+export function getStars(id = "default") { return readAll()[id] || 0; }
+export function setStarsIfBetter(id = "default", stars) {
   const all = readAll();
-  if ((all[gameId] || 0) < stars) {
-    all[gameId] = stars;
+  if ((all[id] || 0) < stars) {
+    all[id] = stars;
     writeAll(all);
     return true;
   }
   return false;
-}
-
-export function resetAll() {
-  writeAll({});
 }
